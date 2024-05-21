@@ -704,6 +704,7 @@ func (cs *State) newStep() {
 // It keeps the RoundState and is the only thing that updates it.
 // Updates (state transitions) happen on timeouts, complete proposals, and 2/3 majorities.
 // State must be locked before any internal state is updated.
+// 这里是 整个流程的核心 主要有三个线程 分别是 receiveRoutine timeoutRoutine 和 startRoutines
 func (cs *State) receiveRoutine(maxSteps int) {
 	onExit := func(cs *State) {
 		// NOTE: the internalMsgQueue may have signed messages from our
@@ -961,18 +962,18 @@ func (cs *State) handleTxsAvailable() {
 	}
 }
 
-//-----------------------------------------------------------------------------
-// State functions
-// Used internally by handleTimeout and handleMsg to make state transitions
+//------------------------------------------------ ----------------------------
+// 状态函数
+// 由handleTimeout和handleMsg内部使用来进行状态转换
 
-// Enter: `timeoutNewHeight` by startTime (commitTime+timeoutCommit),
+// 输入：`timeoutNewHeight` by startTime(commitTime+timeoutCommit),
 //
-//	or, if SkipTimeoutCommit==true, after receiving all precommits from (height,round-1)
+// 或者，如果 SkipTimeoutCommit==true，则在收到来自 (height,round-1) 的所有预提交后
 //
-// Enter: `timeoutPrecommits` after any +2/3 precommits from (height,round-1)
-// Enter: +2/3 precommits for nil at (height,round-1)
-// Enter: +2/3 prevotes any or +2/3 precommits for block or any from (height, round)
-// NOTE: cs.StartTime was already set for height.
+// 在 (height,round-1) 的任何 +2/3 预提交后输入： `timeoutPrecommits`
+// 输入：+2/3 在 (height,round-1) 处预提交 nil
+// 输入：+2/3 预投票任何块或任何来自（高度、圆形）的块或 +2/3 预提交
+// 注意：cs.StartTime 已设置为高度。
 func (cs *State) enterNewRound(height int64, round int32) {
 	logger := cs.Logger.With("height", height, "round", round)
 
@@ -997,9 +998,9 @@ func (cs *State) enterNewRound(height int64, round int32) {
 		validators.IncrementProposerPriority(tmmath.SafeSubInt32(round, cs.Round))
 	}
 
-	// Setup new round
-	// we don't fire newStep for this step,
-	// but we fire an event, so update the round step first
+	// 设置新一轮
+	// 我们不会为此步骤触发 newStep，
+	// 但是我们触发了一个事件，所以首先更新回合步骤
 	cs.updateRoundStep(round, cstypes.RoundStepNewRound)
 	cs.Validators = validators
 	if round == 0 {
@@ -1022,9 +1023,9 @@ func (cs *State) enterNewRound(height int64, round int32) {
 
 	cs.metrics.Rounds.Set(float64(round))
 
-	// Wait for txs to be available in the mempool
-	// before we enterPropose in round 0. If the last block changed the app hash,
-	// we may need an empty "proof" block, and enterPropose immediately.
+	// 等待交易在内存池中可用
+	// 在我们进入第 0 轮提议之前。如果最后一个区块改变了应用程序哈希，
+	// 我们可能需要一个空的“proof”块，并立即进入Propose。
 	waitForTxs := cs.config.WaitForTxs() && round == 0 && !cs.needProofBlock(height)
 	if waitForTxs {
 		if cs.config.CreateEmptyBlocksInterval > 0 {

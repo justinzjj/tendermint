@@ -67,9 +67,9 @@ func (t *timeoutTicker) Chan() <-chan timeoutInfo {
 	return t.tockChan
 }
 
-// ScheduleTimeout schedules a new timeout by sending on the internal tickChan.
-// The timeoutRoutine is always available to read from tickChan, so this won't block.
-// The scheduling may fail if the timeoutRoutine has already scheduled a timeout for a later height/round/step.
+// ScheduleTimeout 通过在内部tickChan 上发送来安排新的超时。
+// timeoutRoutine 始终可从tickChan 读取，因此不会阻塞。
+// 如果 timeoutRoutine 已经为稍后的高度/回合/步数安排了超时，则调度可能会失败。
 func (t *timeoutTicker) ScheduleTimeout(ti timeoutInfo) {
 	t.tickChan <- ti
 }
