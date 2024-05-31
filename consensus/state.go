@@ -233,6 +233,7 @@ func (cs *State) GetLastHeight() int64 {
 }
 
 // GetRoundState returns a shallow copy of the internal consensus state.
+// * 在reactor.go中updateRoundStateRoutine会调用这个方法，每隔 100 毫秒就会调用 GetRoundState
 func (cs *State) GetRoundState() *cstypes.RoundState {
 	cs.mtx.RLock()
 	rs := cs.RoundState // copy
@@ -525,13 +526,17 @@ func (cs *State) updateRoundStep(round int32, step cstypes.RoundStepType) {
 }
 
 // enterNewRound(height, 0) at cs.StartTime.
+// *这里是每一轮的第0次开始
 func (cs *State) scheduleRound0(rs *cstypes.RoundState) {
 	// cs.Logger.Info("scheduleRound0", "now", tmtime.Now(), "startTime", cs.StartTime)
 	sleepDuration := rs.StartTime.Sub(tmtime.Now())
+
+	//* 在这里设置超时事件 等待触发
 	cs.scheduleTimeout(sleepDuration, rs.Height, 0, cstypes.RoundStepNewHeight)
 }
 
 // Attempt to schedule a timeout (by sending timeoutInfo on the tickChan)
+// * scheduleTimeout 会将参数中的信息保存并设置一个 timer，当 timer 达到设定的时间后，将信息发送给一个特定的 channel，而在 receiveRoutine 中则会接收到这个信息并调用 handleTimeout 进行处理：
 func (cs *State) scheduleTimeout(duration time.Duration, height int64, round int32, step cstypes.RoundStepType) {
 	cs.timeoutTicker.ScheduleTimeout(timeoutInfo{duration, height, round, step})
 }
@@ -571,6 +576,7 @@ func (cs *State) reconstructLastCommit(state sm.State) {
 
 // Updates State and increments height to match that of state.
 // The round becomes 0 and cs.Step becomes cstypes.RoundStepNewHeight.
+// * 这里的参数 sm.State 是从func (blockExec *BlockExecutor) ApplyBlock传过来的
 func (cs *State) updateToState(state sm.State) {
 	if cs.CommitRound > -1 && 0 < cs.Height && cs.Height != state.LastBlockHeight {
 		panic(fmt.Sprintf(
@@ -612,6 +618,7 @@ func (cs *State) updateToState(state sm.State) {
 	}
 
 	// Reset fields based on state.
+	// * 这里拿到上一个validator 然后进行操作 更新
 	validators := state.Validators
 
 	switch {
@@ -657,6 +664,7 @@ func (cs *State) updateToState(state sm.State) {
 		cs.StartTime = cs.config.Commit(cs.CommitTime)
 	}
 
+	// * 这里更新validators
 	cs.Validators = validators
 	cs.Proposal = nil
 	cs.ProposalBlock = nil
@@ -704,7 +712,7 @@ func (cs *State) newStep() {
 // It keeps the RoundState and is the only thing that updates it.
 // Updates (state transitions) happen on timeouts, complete proposals, and 2/3 majorities.
 // State must be locked before any internal state is updated.
-// 这里是 整个流程的核心 主要有三个线程 分别是 receiveRoutine timeoutRoutine 和 startRoutines
+// ! 这里是 整个流程的核心 主要有三个线程 分别是 receiveRoutine timeoutRoutine 和 startRoutines
 func (cs *State) receiveRoutine(maxSteps int) {
 	onExit := func(cs *State) {
 		// NOTE: the internalMsgQueue may have signed messages from our
@@ -751,6 +759,7 @@ func (cs *State) receiveRoutine(maxSteps int) {
 		case <-cs.txNotifier.TxsAvailable():
 			cs.handleTxsAvailable()
 
+		// 这里是一个 接收外部节点消息的地方
 		case mi = <-cs.peerMsgQueue:
 			if err := cs.wal.Write(mi); err != nil {
 				cs.Logger.Error("failed writing to WAL", "err", err)
@@ -760,6 +769,7 @@ func (cs *State) receiveRoutine(maxSteps int) {
 			// may generate internal events (votes, complete proposals, 2/3 majorities)
 			cs.handleMsg(mi)
 
+		//这里是一个 接收内部消息的地方
 		case mi = <-cs.internalMsgQueue:
 			err := cs.wal.WriteSync(mi) // NOTE: fsync
 			if err != nil {
@@ -780,6 +790,7 @@ func (cs *State) receiveRoutine(maxSteps int) {
 			// handles proposals, block parts, votes
 			cs.handleMsg(mi)
 
+		// 这里处理超时
 		case ti := <-cs.timeoutTicker.Chan(): // tockChan:
 			if err := cs.wal.Write(ti); err != nil {
 				cs.Logger.Error("failed writing to WAL", "err", err)
@@ -828,10 +839,14 @@ func (cs *State) handleMsg(mi msgInfo) {
 		// of RoundState and only locking when switching out State's copy of
 		// RoundState with the updated copy or by emitting RoundState events in
 		// more places for routines depending on it to listen for.
+		// * Unlock 一下是为了让其它地方可以获取到 RoundState
+		// * 在reactor.go中 会有updateRoundStateRoutine函数 每隔 100 毫秒就会调用 GetRoundState 获取RoundState
+		// * 所以在这里要先解锁，再上锁，实际上是当接收到了一个新的区块部分时，主动让出一下执行权，让其它代码可以尽到的拿到新接收到的区块数据。
 		cs.mtx.Unlock()
 
 		cs.mtx.Lock()
 		if added && cs.ProposalBlockParts.IsComplete() {
+			// * 区块完整的话 就从这里 进入 处理天
 			cs.handleCompleteProposal(msg.Height)
 		}
 		if added {
@@ -888,6 +903,7 @@ func (cs *State) handleMsg(mi msgInfo) {
 	}
 }
 
+// * 这里是处理超时的函数
 func (cs *State) handleTimeout(ti timeoutInfo, rs cstypes.RoundState) {
 	cs.Logger.Debug("received tock", "timeout", ti.Duration, "height", ti.Height, "round", ti.Round, "step", ti.Step)
 
@@ -905,6 +921,7 @@ func (cs *State) handleTimeout(ti timeoutInfo, rs cstypes.RoundState) {
 	case cstypes.RoundStepNewHeight:
 		// NewRound event fired from enterNewRound.
 		// XXX: should we fire timeout here (for timeout commit)?
+		// * 从这里进入到了高度为 ti.Height 的第 0 轮提案。
 		cs.enterNewRound(ti.Height, 0)
 
 	case cstypes.RoundStepNewRound:
@@ -992,9 +1009,17 @@ func (cs *State) enterNewRound(height int64, round int32) {
 	logger.Debug("entering new round", "current", log.NewLazySprintf("%v/%v/%v", cs.Height, cs.Round, cs.Step))
 
 	// increment validators if necessary
+	// * 初始化一些必要内容
 	validators := cs.Validators
+
+	// * cs.Round 其实是 cs.RoundState.Round，它代表的是当前进在进行的是哪一轮。所以这个判断是要看一下即将开始的这一轮是否比当前正在进行的轮大，也即是否要开始新的一轮。
 	if cs.Round < round {
+		// ? 这里会有疑问 为什么要再验证 因为本身是 NEWROUND 为什么还要验证是不是第0轮
+		// ? 实际上 一方面是万无一失 另一方面是考虑 如果初始化都是是0的话 就不会进入 防止进入「由 round X 进入到 round X+1」 开始下一轮新的选举，因为除了第 0 轮，每加一轮，都会更换 Proposer
+		// ? 并且 新加一轮的时候 Proposer 不是在这里改的，而是在正式提交 Block 时改的：finalizeCommit这个函数中，在 updateToState 中，会修改 State.Validators 字段（这个字段正是刚才 enterNewRound 中用到的字段），这个字段改了，Proposer 自然也就改了
+		// * 并且 如果 高度不变的情况下 轮次增加 说明上轮没有达成共识 所以要重新选举
 		validators = validators.Copy()
+		// * 生成新的 Proposer
 		validators.IncrementProposerPriority(tmmath.SafeSubInt32(round, cs.Round))
 	}
 
@@ -1014,6 +1039,7 @@ func (cs *State) enterNewRound(height int64, round int32) {
 		cs.ProposalBlockParts = nil
 	}
 
+	// 设置新的投票集
 	cs.Votes.SetRound(tmmath.SafeAddInt32(round, 1)) // also track next round (round+1) to allow round-skipping
 	cs.TriggeredTimeoutPrecommit = false
 
@@ -1033,6 +1059,7 @@ func (cs *State) enterNewRound(height int64, round int32) {
 				cstypes.RoundStepNewRound)
 		}
 	} else {
+		//* 如果我们不需要等待交易，立即进入提议
 		cs.enterPropose(height, round)
 	}
 }
@@ -1052,6 +1079,7 @@ func (cs *State) needProofBlock(height int64) bool {
 	return !bytes.Equal(cs.state.AppHash, lastBlockMeta.Header.AppHash)
 }
 
+// * 这个函数有以下3个入口情况，第一个是在 enterNewRound 中，第二个是在 handleTxsAvailable 中，第三个是在 handleTimeout 中
 // Enter (CreateEmptyBlocks): from enterNewRound(height,round)
 // Enter (CreateEmptyBlocks, CreateEmptyBlocksInterval > 0 ):
 //
@@ -1061,6 +1089,7 @@ func (cs *State) needProofBlock(height int64) bool {
 func (cs *State) enterPropose(height int64, round int32) {
 	logger := cs.Logger.With("height", height, "round", round)
 
+	// 1. 检查当前状态是否是正确的
 	if cs.Height != height || round < cs.Round || (cs.Round == round && cstypes.RoundStepPropose <= cs.Step) {
 		logger.Debug(
 			"entering propose step with invalid args",
@@ -1071,14 +1100,17 @@ func (cs *State) enterPropose(height int64, round int32) {
 
 	logger.Debug("entering propose step", "current", log.NewLazySprintf("%v/%v/%v", cs.Height, cs.Round, cs.Step))
 
+	// 使用了defer，所以这里是最后执行的，在退出时后执行
 	defer func() {
 		// Done enterPropose:
+		// 更新step
 		cs.updateRoundStep(round, cstypes.RoundStepPropose)
 		cs.newStep()
 
 		// If we have the whole proposal + POL, then goto Prevote now.
 		// else, we'll enterPrevote when the rest of the proposal is received (in AddProposalBlockPart),
 		// or else after timeoutPropose
+		// * 如果此时proposal已经完整，那么直接进入Prevote
 		if cs.isProposalComplete() {
 			cs.enterPrevote(height, cs.Round)
 		}
@@ -1087,6 +1119,8 @@ func (cs *State) enterPropose(height int64, round int32) {
 	// If we don't get the proposal and all block parts quick enough, enterPrevote
 	cs.scheduleTimeout(cs.config.Propose(round), height, round, cstypes.RoundStepPropose)
 
+	//* 这里后面都是做判断 分别判断 privValidator，privValidator的公钥，validators，Proposer 判断结束后 执行上main的defer
+	//* 这段代码在判断当前结点是否一个 validator 并且是当前轮的 Proposer，如果是的话，就会调用 decideProposal 函数，否则就会直接返回
 	// Nothing more to do if we're not a validator
 	if cs.privValidator == nil {
 		logger.Debug("node is not a validator")
@@ -1122,16 +1156,19 @@ func (cs *State) isProposer(address []byte) bool {
 	return bytes.Equal(cs.Validators.GetProposer().Address, address)
 }
 
+// * 默认的额决策提案，产生新的区块
 func (cs *State) defaultDecideProposal(height int64, round int32) {
 	var block *types.Block
 	var blockParts *types.PartSet
 
 	// Decide on block
+	//* ValidBlock这个值不为空 代表已经有 2/3 的结点认可的区块了，所以虽然没有成功提交，但新的一轮里仍然直接提交这个区块而不用再去创建新的了。
 	if cs.ValidBlock != nil {
 		// If there is valid block, choose that.
 		block, blockParts = cs.ValidBlock, cs.ValidBlockParts
 	} else {
 		// Create a new proposal block from state/txs from the mempool.
+		//* 这里创建新的区块
 		block, blockParts = cs.createProposalBlock()
 		if block == nil {
 			return
@@ -1148,12 +1185,17 @@ func (cs *State) defaultDecideProposal(height int64, round int32) {
 	propBlockID := types.BlockID{Hash: block.Hash(), PartSetHeader: blockParts.Header()}
 	proposal := types.NewProposal(height, round, cs.ValidRound, propBlockID)
 	p := proposal.ToProto()
+	// * 这里对区块进行Proposal签名
 	if err := cs.privValidator.SignProposal(cs.state.ChainID, p); err == nil {
 		proposal.Signature = p.Signature
 
 		// send proposal and block parts on internal msg queue
+		// * 这里将Proposal发送到内部消息队列 发送到internalMsgQueue这个通道中
+		// * 最终是由case *ProposalMessage处理
 		cs.sendInternalMessage(msgInfo{&ProposalMessage{proposal}, ""})
 
+		// * 这里将Block 切成了一个个的小块数据 也发送到internalMsgQueue这个通道中
+		// * 最终是由case *BlockPartMessage处理
 		for i := 0; i < int(blockParts.Total()); i++ {
 			part := blockParts.GetPart(i)
 			cs.sendInternalMessage(msgInfo{&BlockPartMessage{cs.Height, cs.Round, part}, ""})
@@ -1643,6 +1685,7 @@ func (cs *State) finalizeCommit(height int64) {
 	fail.Fail() // XXX
 
 	// Create a copy of the state for staging and an event cache for txs.
+	// * 在这里获得了当前区块状态的一份拷贝 在后续传递用于保存到下一个区块中
 	stateCopy := cs.state.Copy()
 
 	// Execute and commit the block, update and save the state, and update the mempool.
@@ -1681,6 +1724,7 @@ func (cs *State) finalizeCommit(height int64) {
 	cs.recordMetrics(height, block)
 
 	// NewHeightStep!
+	// * 在这里更新状态，进入新的高度
 	cs.updateToState(stateCopy)
 
 	fail.Fail() // XXX
@@ -1692,6 +1736,7 @@ func (cs *State) finalizeCommit(height int64) {
 
 	// cs.StartTime is already set.
 	// Schedule Round0 to start soon.
+	// * 这里是每一高度的第0轮 开始，
 	cs.scheduleRound0(&cs.RoundState)
 
 	// By here,
@@ -1804,11 +1849,13 @@ func (cs *State) recordMetrics(height int64, block *types.Block) {
 	cs.metrics.CommittedHeight.Set(float64(block.Height))
 }
 
-//-----------------------------------------------------------------------------
-
+// -----------------------------------------------------------------------------
+// * 默认的处理提案函数
+// * 当大家从internalMsgQueue通道中 获得信息，调用handleMsg，再根据信息类型 ProposalMessage 选择进入 本函数
 func (cs *State) defaultSetProposal(proposal *types.Proposal) error {
 	// Already have one
 	// TODO: possibly catch double proposals
+	//* 前面做检查 检查各种字段
 	if cs.Proposal != nil {
 		return nil
 	}
@@ -1826,12 +1873,13 @@ func (cs *State) defaultSetProposal(proposal *types.Proposal) error {
 
 	p := proposal.ToProto()
 	// Verify signature
+	// * 这里验证Proposal的签名
 	if !cs.Validators.GetProposer().PubKey.VerifySignature(
 		types.ProposalSignBytes(cs.state.ChainID, p), proposal.Signature,
 	) {
 		return ErrInvalidProposalSignature
 	}
-
+	// * 通过验证后 将其保存到cs.Proposal中
 	proposal.Signature = p.Signature
 	cs.Proposal = proposal
 	// We don't update cs.ProposalBlockParts if it is already set.

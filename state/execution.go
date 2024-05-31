@@ -128,6 +128,7 @@ func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) e
 // It's the only function that needs to be called
 // from outside this package to process and commit an entire block.
 // It takes a blockID to avoid recomputing the parts hash.
+// * 这是唯一需要从该包外部调用来处理和提交整个块的函数。也就是整个BlockExecutor 的执行入口
 func (blockExec *BlockExecutor) ApplyBlock(
 	state State, blockID types.BlockID, block *types.Block,
 ) (State, int64, error) {
@@ -137,6 +138,7 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	}
 
 	startTime := time.Now().UnixNano()
+	// * 这里是执行块的所有交易 通过ABCI获得 从ProxyAPP获得
 	abciResponses, err := execBlockOnProxyApp(
 		blockExec.logger, blockExec.proxyApp, block, blockExec.store, state.InitialHeight,
 	)
@@ -161,7 +163,7 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	if err != nil {
 		return state, 0, fmt.Errorf("error in validator updates: %v", err)
 	}
-
+	//  * 这里是更新的新的Validators
 	validatorUpdates, err := types.PB2TM.ValidatorUpdates(abciValUpdates)
 	if err != nil {
 		return state, 0, err
@@ -171,6 +173,8 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	}
 
 	// Update the state with the block and responses.
+	// * 然后在这里 把所有的更新都更新到新的state中
+	// * 返回的 State 代表即将到来的高度（当前高度 + 1）的 state ，它的 Validators 字段来自于当前高度的 NextValidators 字段
 	state, err = updateState(state, blockID, &block.Header, abciResponses, validatorUpdates)
 	if err != nil {
 		return state, 0, fmt.Errorf("commit failed for application: %v", err)
@@ -254,8 +258,8 @@ func (blockExec *BlockExecutor) Commit(
 //---------------------------------------------------------
 // Helper functions for executing blocks and updating state
 
-// Executes block's transactions on proxyAppConn.
-// Returns a list of transaction results and updates to the validator set
+// Executes block's transactions on proxyAppConn.在 proxyAppConn 上执行块的交易
+// Returns a list of transaction results and updates to the validator set 返回交易结果列表并更新validator集
 func execBlockOnProxyApp(
 	logger log.Logger,
 	proxyAppConn proxy.AppConnConsensus,
@@ -298,6 +302,7 @@ func execBlockOnProxyApp(
 	}
 
 	// Begin block
+	// * 这里更新beginblock
 	var err error
 	pbh := block.Header.ToProto()
 	if pbh == nil {
@@ -324,6 +329,7 @@ func execBlockOnProxyApp(
 	}
 
 	// End block.
+	// * 这里面存的是event事件
 	abciResponses.EndBlock, err = proxyAppConn.EndBlockSync(abci.RequestEndBlock{Height: block.Height})
 	if err != nil {
 		logger.Error("error in proxyAppConn.EndBlock", "err", err)
@@ -410,23 +416,29 @@ func updateState(
 
 	// Copy the valset so we can apply changes from EndBlock
 	// and update s.LastValidators and s.Validators.
+	// * 在这里获取之前保存的新一轮的Validators 也就是本次块的Validators
 	nValSet := state.NextValidators.Copy()
 
 	// Update the validator set with the latest abciResponses.
+	// ?我觉得这一行代码没用
 	lastHeightValsChanged := state.LastHeightValidatorsChanged
+	// * 这里是 如果Validators集合发生了改变，那就要在考虑集合的改变的同时，然后 更新propsoer
 	if len(validatorUpdates) > 0 {
 		err := nValSet.UpdateWithChangeSet(validatorUpdates)
 		if err != nil {
 			return state, fmt.Errorf("error changing validator set: %v", err)
 		}
 		// Change results from this height but only applies to the next next height.
+		// *这里的额外加两轮，因为nValSet在更新后 要在下一次再打包的时候 再回用得上 而现在因为正在执行打包 此时的header.Height还是上一块的高度 +1之后才是现在正在打包的高度，再+1就是下一轮的高度
 		lastHeightValsChanged = header.Height + 1 + 1
 	}
 
 	// Update validator proposer priority and set state variables.
+	// * 这里是更新nValSet 准备下一轮的proposer也就是新的validators集合
 	nValSet.IncrementProposerPriority(1)
 
 	// Update the params with the latest abciResponses.
+	// * 这个字段中主要有用的就是validators的公钥信息，在这里检查并更新
 	nextParams := state.ConsensusParams
 	lastHeightParamsChanged := state.LastHeightConsensusParamsChanged
 	if abciResponses.EndBlock.ConsensusParamUpdates != nil {
@@ -453,13 +465,13 @@ func updateState(
 		InitialHeight:                    state.InitialHeight,
 		LastBlockHeight:                  header.Height,
 		LastBlockID:                      blockID,
-		LastBlockTime:                    header.Time,
-		NextValidators:                   nValSet,
-		Validators:                       state.NextValidators.Copy(),
-		LastValidators:                   state.Validators.Copy(),
-		LastHeightValidatorsChanged:      lastHeightValsChanged,
-		ConsensusParams:                  nextParams,
-		LastHeightConsensusParamsChanged: lastHeightParamsChanged,
+		LastBlockTime:                    header.Time,                 // 这里是上一个区块的时间
+		NextValidators:                   nValSet,                     // 这里更新了给下一个块的新的Validators集合
+		Validators:                       state.NextValidators.Copy(), // 这里更新本次块的Validators
+		LastValidators:                   state.Validators.Copy(),     // 这里更新上一块的Validators
+		LastHeightValidatorsChanged:      lastHeightValsChanged,       // 如果Validators集合发生了改变，记录
+		ConsensusParams:                  nextParams,                  // 这里更新了共识参数 主要是公钥信息
+		LastHeightConsensusParamsChanged: lastHeightParamsChanged,     // 如果共识参数发生了改变，记录
 		LastResultsHash:                  ABCIResponsesResultsHash(abciResponses),
 		AppHash:                          nil,
 	}, nil

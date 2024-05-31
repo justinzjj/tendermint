@@ -113,6 +113,7 @@ func (vals *ValidatorSet) CopyIncrementProposerPriority(times int32) *ValidatorS
 // IncrementProposerPriority increments ProposerPriority of each validator and
 // updates the proposer. Panics if validator set is empty.
 // `times` must be positive.
+// * 这个函数是用来更新Proposer的，每次调用这个函数，就会更新一次Proposer
 func (vals *ValidatorSet) IncrementProposerPriority(times int32) {
 	if vals.IsNilOrEmpty() {
 		panic("empty validator set")

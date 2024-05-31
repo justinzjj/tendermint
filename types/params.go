@@ -173,6 +173,7 @@ func UpdateConsensusParams(params tmproto.ConsensusParams, params2 *abci.Consens
 		res.Evidence.MaxAgeDuration = params2.Evidence.MaxAgeDuration
 		res.Evidence.MaxBytes = params2.Evidence.MaxBytes
 	}
+	// * 在这里 添加了公钥信息 这里只做添加 竟然不做删除 也就是说 这个公钥信息 一旦添加 就不会被删除了
 	if params2.Validator != nil {
 		// Copy params2.Validator.PubkeyTypes, and set result's value to the copy.
 		// This avoids having to initialize the slice to 0 values, and then write to it again.

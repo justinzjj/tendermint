@@ -70,6 +70,8 @@ type State struct {
 
 	// Consensus parameters used for validating blocks.
 	// Changes returned by EndBlock and updated after Commit.
+	// * 这里的共识参数 包括了区块的参数 证明的参数 Validator的公钥 版本信息
+	// * 其中应该主要是在更改公钥 其他的参数都是MAX类的限制信息
 	ConsensusParams                  tmproto.ConsensusParams
 	LastHeightConsensusParamsChanged int64
 
