@@ -731,7 +731,7 @@ func (vals *ValidatorSet) VerifyCommit(chainID string, blockID BlockID,
 //
 // This method is primarily used by the light client and does not check all the
 // signatures.
-func (vals *ValidatorSet) roxVerifyCommitLight(chainID string, blockID BlockID,
+func (vals *ValidatorSet) VerifyCommitLight(chainID string, blockID BlockID,
 	height int64, commit *Commit) error {
 
 	if vals.Size() != len(commit.Signatures) {
