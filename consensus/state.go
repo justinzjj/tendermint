@@ -837,7 +837,7 @@ func (cs *State) handleMsg(mi msgInfo) {
 		//
 		// This code can be further improved by either always operating on a copy
 		// of RoundState and only locking when switching out State's copy of
-		// RoundState with the updated copy or by emitting RoundState events in
+		// RoundState with the updated copy or by emitting     RoundState events in
 		// more places for routines depending on it to listen for.
 		// * Unlock 一下是为了让其它地方可以获取到 RoundState
 		// * 在reactor.go中 会有updateRoundStateRoutine函数 每隔 100 毫秒就会调用 GetRoundState 获取RoundState
@@ -846,7 +846,7 @@ func (cs *State) handleMsg(mi msgInfo) {
 
 		cs.mtx.Lock()
 		if added && cs.ProposalBlockParts.IsComplete() {
-			// * 区块完整的话 就从这里 进入 处理天
+			// * 区块完整的话 就从这里 进入 处理提案
 			cs.handleCompleteProposal(msg.Height)
 		}
 		if added {
@@ -1168,7 +1168,7 @@ func (cs *State) defaultDecideProposal(height int64, round int32) {
 		block, blockParts = cs.ValidBlock, cs.ValidBlockParts
 	} else {
 		// Create a new proposal block from state/txs from the mempool.
-		//* 这里创建新的区块
+		//* 这里创建新的区块 做commit
 		block, blockParts = cs.createProposalBlock()
 		if block == nil {
 			return
@@ -1244,6 +1244,9 @@ func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.Pa
 	case cs.LastCommit.HasTwoThirdsMajority():
 		// Make the commit from LastCommit
 		commit = cs.LastCommit.MakeCommit()
+		// * 上一个区块的commit的voteset对下一块进行的MakeCommit，也就是上一个区块的voteset 对这个即将要出来的块进行签名，这个过程都是在生产块的时候就知道的了，也就是说，如果不参与块的proposal，是无法拿到voteset 也就无法MakeCommit的
+		// *并且 voteset是保存在tendermint的state中，而不是明文保存在区块中的，块头中只有hash
+		// !这个commit在验证的时候会有很大的作用尤其是轻客户端验证
 
 	default: // This shouldn't happen.
 		cs.Logger.Error("propose step; cannot propose anything without commit for the previous block")
@@ -1266,6 +1269,8 @@ func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.Pa
 // Enter: proposal block and POL is ready.
 // Prevote for LockedBlock if we're locked, or ProposalBlock if valid.
 // Otherwise vote nil.
+// * 这个函数有很多种入口的可能性，其中最为正常的情况就是从handleCompleteProposal中进入，一路从接收到消息，处理区块数据完整，一切正常走完了RoundStepPropose阶段，然后进入到Prevote阶段
+// * 一些不正常的入口包括不限于，超时，或者在进入到Prevote阶段之前，已经有了+2/3的Prevote等
 func (cs *State) enterPrevote(height int64, round int32) {
 	logger := cs.Logger.With("height", height, "round", round)
 
@@ -1292,6 +1297,7 @@ func (cs *State) enterPrevote(height int64, round int32) {
 	// (so we have more time to try and collect +2/3 prevotes for a single block)
 }
 
+// * 同理 这里也是doPrevote接口的一个实现
 func (cs *State) defaultDoPrevote(height int64, round int32) {
 	logger := cs.Logger.With("height", height, "round", round)
 
@@ -1309,7 +1315,11 @@ func (cs *State) defaultDoPrevote(height int64, round int32) {
 		return
 	}
 
+	// * 上面主要是在做检查 上锁的话就直接投票
+	// * 如果没有区块的话，就不投票，说明上一步的提案没有通过
+
 	// Validate proposal block
+	// * 验证提案区块 无效就投空
 	err := cs.blockExec.ValidateBlock(cs.state, cs.ProposalBlock)
 	if err != nil {
 		// ProposalBlock is invalid, prevote nil.
@@ -1362,9 +1372,11 @@ func (cs *State) enterPrevoteWait(height int64, round int32) {
 // Lock & precommit the ProposalBlock if we have enough prevotes for it (a POL in this round)
 // else, unlock an existing lock and precommit nil if +2/3 of prevotes were nil,
 // else, precommit nil otherwise.
+// *这里是Precommit阶段 这个函数也有很多种进入的可能性，其中最正常的应该也是在 handlemMsg 中，处理votemsg,然后进入addvote 然后识别type 是prevote 然后满足2/3 最后进入到这个函数
 func (cs *State) enterPrecommit(height int64, round int32) {
 	logger := cs.Logger.With("height", height, "round", round)
 
+	// * 检查高度 轮次
 	if cs.Height != height || round < cs.Round || (cs.Round == round && cstypes.RoundStepPrecommit <= cs.Step) {
 		logger.Debug(
 			"entering precommit step with invalid args",
@@ -1450,6 +1462,7 @@ func (cs *State) enterPrecommit(height int64, round int32) {
 			panic(fmt.Sprintf("precommit step; +2/3 prevoted for an invalid block: %v", err))
 		}
 
+		//* 这里更新LockedRound、LockedBlock等
 		cs.LockedRound = round
 		cs.LockedBlock = cs.ProposalBlock
 		cs.LockedBlockParts = cs.ProposalBlockParts
@@ -1458,6 +1471,7 @@ func (cs *State) enterPrecommit(height int64, round int32) {
 			logger.Error("failed publishing event lock", "err", err)
 		}
 
+		// * 签名并广播投票
 		cs.signAddVote(tmproto.PrecommitType, blockID.Hash, blockID.PartSetHeader)
 		return
 	}
@@ -1516,6 +1530,7 @@ func (cs *State) enterPrecommitWait(height int64, round int32) {
 }
 
 // Enter: +2/3 precommits for block
+// * 这里正式提交了 区块
 func (cs *State) enterCommit(height int64, commitRound int32) {
 	logger := cs.Logger.With("height", height, "commit_round", commitRound)
 
@@ -1533,14 +1548,18 @@ func (cs *State) enterCommit(height int64, commitRound int32) {
 		// Done enterCommit:
 		// keep cs.Round the same, commitRound points to the right Precommits set.
 		cs.updateRoundStep(cs.Round, cstypes.RoundStepCommit)
+
+		// 这里赋值这两个字段
 		cs.CommitRound = commitRound
 		cs.CommitTime = tmtime.Now()
 		cs.newStep()
 
 		// Maybe finalize immediately.
+		// * 一切都检查没问题的话 就 调用这里 最终提交
 		cs.tryFinalizeCommit(height)
 	}()
 
+	// * 这里开始  检查 precommit 的投票
 	blockID, ok := cs.Votes.Precommits(commitRound).TwoThirdsMajority()
 	if !ok {
 		panic("RunActionCommit() expects +2/3 precommits")
@@ -1940,6 +1959,7 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 			return added, err
 		}
 
+		// *这里 建立的 整个区块
 		block, err := types.BlockFromProto(pbb)
 		if err != nil {
 			return added, err
@@ -1960,6 +1980,7 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 func (cs *State) handleCompleteProposal(blockHeight int64) {
 	// Update Valid* if we can.
 	prevotes := cs.Votes.Prevotes(cs.Round)
+	// * 这里来看是否超过2/3
 	blockID, hasTwoThirds := prevotes.TwoThirdsMajority()
 	if hasTwoThirds && !blockID.IsZero() && (cs.ValidRound < cs.Round) {
 		if cs.ProposalBlock.HashesTo(blockID.Hash) {
@@ -1968,7 +1989,7 @@ func (cs *State) handleCompleteProposal(blockHeight int64) {
 				"valid_round", cs.Round,
 				"valid_block_hash", log.NewLazyBlockHash(cs.ProposalBlock),
 			)
-
+			// * 相关信息记录到cs.Valid*中
 			cs.ValidRound = cs.Round
 			cs.ValidBlock = cs.ProposalBlock
 			cs.ValidBlockParts = cs.ProposalBlockParts
@@ -1979,7 +2000,7 @@ func (cs *State) handleCompleteProposal(blockHeight int64) {
 		// than 1/3. We should trigger in the future accountability
 		// procedure at this point.
 	}
-
+	// *这里判断是否满足进入下一阶段的条件 就是propose完成大家投票同意
 	if cs.Step <= cstypes.RoundStepPropose && cs.isProposalComplete() {
 		// Move onto the next step
 		cs.enterPrevote(blockHeight, cs.Round)
@@ -2041,6 +2062,8 @@ func (cs *State) tryAddVote(vote *types.Vote, peerID p2p.ID) (bool, error) {
 	return added, nil
 }
 
+// *这里是主要处理投票的函数
+// * 从	internalMsgQueue中获取了VoteMessage，经过tryAddVote调用到此处
 func (cs *State) addVote(vote *types.Vote, peerID p2p.ID) (added bool, err error) {
 	cs.Logger.Debug(
 		"adding vote",
@@ -2089,6 +2112,7 @@ func (cs *State) addVote(vote *types.Vote, peerID p2p.ID) (added bool, err error
 	}
 
 	height := cs.Height
+	// * AddVote 将投票信息保存到 Votes 结构体中
 	added, err = cs.Votes.AddVote(vote, peerID)
 	if !added {
 		// Either duplicate, or error upon cs.Votes.AddByIndex()
@@ -2098,14 +2122,17 @@ func (cs *State) addVote(vote *types.Vote, peerID p2p.ID) (added bool, err error
 	if err := cs.eventBus.PublishEventVote(types.EventDataVote{Vote: vote}); err != nil {
 		return added, err
 	}
+	// *FireEvent 将投票信息通过 p2p 广播出去。
 	cs.evsw.FireEvent(types.EventVote, vote)
 
+	//* 不管是 Prevote 投票还是 Precommit 投票都是同一个结构体，只不过它们的 Type 不一样
 	switch vote.Type {
 	case tmproto.PrevoteType:
 		prevotes := cs.Votes.Prevotes(vote.Round)
 		cs.Logger.Debug("added vote to prevote", "vote", vote, "prevotes", prevotes.StringShort())
 
 		// If +2/3 prevotes for a block or nil for *any* round:
+		//* 这里取出 prevote 的投票信息，并判断区块的投票是否超过 2/3 。
 		if blockID, ok := prevotes.TwoThirdsMajority(); ok {
 			// There was a polka!
 			// If we're locked but this is a recent polka, unlock.
@@ -2134,6 +2161,10 @@ func (cs *State) addVote(vote *types.Vote, peerID p2p.ID) (added bool, err error
 			if len(blockID.Hash) != 0 && (cs.ValidRound < vote.Round) && (vote.Round == cs.Round) {
 				if cs.ProposalBlock.HashesTo(blockID.Hash) {
 					cs.Logger.Debug("updating valid block because of POL", "valid_round", cs.ValidRound, "pol_round", vote.Round)
+
+					// * 如果超过了并且 round 和 block 检查都正确的情况下，则会记录 ValidRound 和 ValidBlock 信息
+					//* 这也是这两个变量的初始化来源。
+
 					cs.ValidRound = vote.Round
 					cs.ValidBlock = cs.ProposalBlock
 					cs.ValidBlockParts = cs.ProposalBlockParts
@@ -2161,18 +2192,26 @@ func (cs *State) addVote(vote *types.Vote, peerID p2p.ID) (added bool, err error
 
 		// If +2/3 prevotes for *anything* for future round:
 		switch {
+		/// 当前结点的轮数已经落后了，已经有 2/3 的人已经处于 vote.Round 轮了
+		/// 所以我们直接调用 enterNewRound 进入到 vote.Round 轮。
 		case cs.Round < vote.Round && prevotes.HasTwoThirdsAny():
 			// Round-skip if there is any 2/3+ of votes ahead of us
 			cs.enterNewRound(height, vote.Round)
 
+		/// vote 中记录的 round 正是当前结点的当前轮，且正处于 Prevote 或这个阶段后面，
+		/// 那就正常处理。
 		case cs.Round == vote.Round && cstypes.RoundStepPrevote <= cs.Step: // current round
 			blockID, ok := prevotes.TwoThirdsMajority()
 			if ok && (cs.isProposalComplete() || len(blockID.Hash) == 0) {
+				//*如果这个区块的 prevote 投票已经达到 2/3 （TwoThirdsMajority） 并且 Block 已经准备就绪
 				cs.enterPrecommit(height, vote.Round)
 			} else if prevotes.HasTwoThirdsAny() {
+				// *否则如果仅仅是有 2/3 的人投票但还没选出一个区块（HasTwoThirdsAny）
 				cs.enterPrevoteWait(height, vote.Round)
 			}
 
+		/// 当前结点已经有一个提案，但投票信息是 POLRound（即 ValidRound）轮的投票，这说明这个投票已经过时了，
+		/// 所以这里忽略了这个投票，直接针对已有提案（尝试）进入 Prevote 阶段。
 		case cs.Proposal != nil && 0 <= cs.Proposal.POLRound && cs.Proposal.POLRound == vote.Round:
 			// If the proposal is now complete, enter prevote of cs.Round.
 			if cs.isProposalComplete() {
@@ -2181,6 +2220,7 @@ func (cs *State) addVote(vote *types.Vote, peerID p2p.ID) (added bool, err error
 		}
 
 	case tmproto.PrecommitType:
+		// * 这里是处理在进入enterPrecommit之后，投票类型为PrecommitType
 		precommits := cs.Votes.Precommits(vote.Round)
 		cs.Logger.Debug("added vote to precommit",
 			"height", vote.Height,
@@ -2191,10 +2231,13 @@ func (cs *State) addVote(vote *types.Vote, peerID p2p.ID) (added bool, err error
 
 		blockID, ok := precommits.TwoThirdsMajority()
 		if ok {
+
+			//? 至于说为什么这里又调用了这个玩意，推测是保险起见 因为其实在进入之后，会直接被用Round字段判断，如果是落后的节点那就 进入 抓紧追赶 如果不落后就直接退出来了，不会真的开始
 			// Executed as TwoThirdsMajority could be from a higher round
 			cs.enterNewRound(height, vote.Round)
 			cs.enterPrecommit(height, vote.Round)
 
+			// * 这里的逻辑和之前的prevote类似 就是已经检查了2/3投票 然后看block是不是对的，有blockID有效 就进入Commit正式提交区块，不然就用wait再等等
 			if len(blockID.Hash) != 0 {
 				cs.enterCommit(height, vote.Round)
 				if cs.config.SkipTimeoutCommit && precommits.HasAll() {
@@ -2290,6 +2333,7 @@ func (cs *State) signAddVote(msgType tmproto.SignedMsgType, hash []byte, header 
 	}
 
 	// TODO: pass pubKey to signVote
+	//* 签名vote数据，后将 vote 发送给 internalMsgQueue 处理。 之后由tryAddVote 从internalMsgQueue中取出处理
 	vote, err := cs.signVote(msgType, hash, header)
 	if err == nil {
 		cs.sendInternalMessage(msgInfo{&VoteMessage{vote}, ""})

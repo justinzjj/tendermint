@@ -665,6 +665,7 @@ func (cs CommitSig) BlockID(commitBlockID BlockID) BlockID {
 }
 
 // ValidateBasic performs basic validation.
+// *这个函数的功能是
 func (cs CommitSig) ValidateBasic() error {
 	switch cs.BlockIDFlag {
 	case BlockIDFlagAbsent:
@@ -752,6 +753,7 @@ type Commit struct {
 }
 
 // NewCommit returns a new Commit.
+// * 这里其中blockID 指的是 第一个 被大家认可的区块的ID
 func NewCommit(height int64, round int32, blockID BlockID, commitSigs []CommitSig) *Commit {
 	return &Commit{
 		Height:     height,
@@ -1161,6 +1163,7 @@ func (data *EvidenceData) FromProto(eviData *tmproto.EvidenceList) error {
 //--------------------------------------------------------------------------------
 
 // BlockID
+// * 这里的ID 指的是区块的ID 其中包含一段hash 和一个PartSetHeader 也就是 一部分set的header
 type BlockID struct {
 	Hash          tmbytes.HexBytes `json:"hash"`
 	PartSetHeader PartSetHeader    `json:"parts"`

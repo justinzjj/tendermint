@@ -157,6 +157,7 @@ func verifyNewHeaderAndVals(
 	now time.Time,
 	maxClockDrift time.Duration) error {
 
+	//* 这里调用未被验证的头部的ValidateBasic方法，验证头部是否合法
 	if err := untrustedHeader.ValidateBasic(trustedHeader.ChainID); err != nil {
 		return fmt.Errorf("untrustedHeader.ValidateBasic failed: %w", err)
 	}

@@ -125,12 +125,23 @@ func (vals *ValidatorSet) IncrementProposerPriority(times int32) {
 	// Cap the difference between priorities to be proportional to 2*totalPower by
 	// re-normalizing priorities, i.e., rescale all priorities by multiplying with:
 	//  2*totalVotingPower/(maxPriority - minPriority)
+
+	// PriorityWindowSizeFactor 的定义是常量 2 。
+	// diffMax 的意思是，所有 Validator.ProposerPriority 的最大值和最小值之差，不能超过 diffMax。
+	// 所以这里规定了所以 Validator.ProposerPriority 的最大值和最小值之差，不能超过 2 倍的 TotalVotingPower(所有 validators 的 voting power 加起来的总量)。
 	diffMax := PriorityWindowSizeFactor * vals.TotalVotingPower()
+	// RescalePriorities 用于确保上述的规则，即 所有 Validator.ProposerPriority 的最大值和最小值之差，不能超过 diffMax。
+	// 它使用等比例缩小（除法）的方式来保证这一点。
 	vals.RescalePriorities(diffMax)
+	// shiftByAvgProposerPriority 用于保证让所有 ProposerPriority 的值分布于 0 的左右（有正的也有负的），
+	// 它的做法是让每一个 ProposerPriority 减去所有 ProposerPriority 的平均值。
 	vals.shiftByAvgProposerPriority()
 
 	var proposer *Validator
 	// Call IncrementProposerPriority(1) times times.
+	// incrementProposerPriority 将每一个 validator 的 ProposerPriority 值，加上它们自己的 VotingPower 值。
+	// 最终选出 ProposerPriority 值最大的那个 validator 返回。但在返回之前，会将这个 validator 的 ProposerPriority
+	// 减去 TotalVotingPower ，以减小它下次还最大的可能性。
 	for i := int32(0); i < times; i++ {
 		proposer = vals.incrementProposerPriority()
 	}
@@ -720,7 +731,7 @@ func (vals *ValidatorSet) VerifyCommit(chainID string, blockID BlockID,
 //
 // This method is primarily used by the light client and does not check all the
 // signatures.
-func (vals *ValidatorSet) VerifyCommitLight(chainID string, blockID BlockID,
+func (vals *ValidatorSet) roxVerifyCommitLight(chainID string, blockID BlockID,
 	height int64, commit *Commit) error {
 
 	if vals.Size() != len(commit.Signatures) {

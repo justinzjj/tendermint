@@ -134,21 +134,29 @@ func (sh SignedHeader) ValidateBasic(chainID string) error {
 		return errors.New("missing commit")
 	}
 
+	//* 这里检查头的有效性
 	if err := sh.Header.ValidateBasic(); err != nil {
 		return fmt.Errorf("invalid header: %w", err)
 	}
+	//*这里检查提交的有效性
 	if err := sh.Commit.ValidateBasic(); err != nil {
 		return fmt.Errorf("invalid commit: %w", err)
 	}
 
+	// * 这里比较链ID
 	if sh.ChainID != chainID {
 		return fmt.Errorf("header belongs to another chain %q, not %q", sh.ChainID, chainID)
 	}
 
 	// Make sure the header is consistent with the commit.
+	// *这里比较高度
 	if sh.Commit.Height != sh.Height {
 		return fmt.Errorf("header and commit height mismatch: %d vs %d", sh.Height, sh.Commit.Height)
 	}
+
+	// * 这里比较 区块头的哈希值和提交中Commit的区块 ID 的哈希值
+	// * 这里前面的是拿到的header 然后做一个hash
+	// * 后面是这个拿到的header中的 commit 然后其中的 BlockID 的hash
 	if hhash, chash := sh.Header.Hash(), sh.Commit.BlockID.Hash; !bytes.Equal(hhash, chash) {
 		return fmt.Errorf("commit signs block %X, header is block %X", chash, hhash)
 	}
