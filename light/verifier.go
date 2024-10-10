@@ -29,6 +29,7 @@ var (
 //
 // maxClockDrift defines how much untrustedHeader.Time can drift into the
 // future.
+// @ 不相邻的块头认证
 func VerifyNonAdjacent(
 	trustedHeader *types.SignedHeader, // height=X
 	trustedVals *types.ValidatorSet, // height=X or height=X+1
@@ -90,6 +91,7 @@ func VerifyNonAdjacent(
 //
 // maxClockDrift defines how much untrustedHeader.Time can drift into the
 // future.
+// @ 相邻的块头认证
 func VerifyAdjacent(
 	trustedHeader *types.SignedHeader, // height=X
 	untrustedHeader *types.SignedHeader, // height=X+1
@@ -102,10 +104,13 @@ func VerifyAdjacent(
 		return errors.New("headers must be adjacent in height")
 	}
 
+	// @ 验证块头是否过期
+	// @ 实际上在检查时间是否在有效期内
 	if HeaderExpired(trustedHeader, trustingPeriod, now) {
 		return ErrOldHeaderExpired{trustedHeader.Time.Add(trustingPeriod), now}
 	}
 
+	// @ 验证新块头和新验证人是否合法
 	if err := verifyNewHeaderAndVals(
 		untrustedHeader, untrustedVals,
 		trustedHeader,
@@ -142,14 +147,17 @@ func Verify(
 	maxClockDrift time.Duration,
 	trustLevel tmmath.Fraction) error {
 
+	// @ 如果不相邻
 	if untrustedHeader.Height != trustedHeader.Height+1 {
 		return VerifyNonAdjacent(trustedHeader, trustedVals, untrustedHeader, untrustedVals,
 			trustingPeriod, now, maxClockDrift, trustLevel)
 	}
 
+	// @ 如果相邻
 	return VerifyAdjacent(trustedHeader, untrustedHeader, untrustedVals, trustingPeriod, now, maxClockDrift)
 }
 
+// @ 验证块头和validators是否合法
 func verifyNewHeaderAndVals(
 	untrustedHeader *types.SignedHeader,
 	untrustedVals *types.ValidatorSet,
@@ -157,23 +165,26 @@ func verifyNewHeaderAndVals(
 	now time.Time,
 	maxClockDrift time.Duration) error {
 
-	//* 这里调用未被验证的头部的ValidateBasic方法，验证头部是否合法
+	// @ 这里调用未被验证的头部的ValidateBasic方法，验证头部是否合法
 	if err := untrustedHeader.ValidateBasic(trustedHeader.ChainID); err != nil {
 		return fmt.Errorf("untrustedHeader.ValidateBasic failed: %w", err)
 	}
 
+	// @ 验证新块头的高度是否大于老块头的高度
 	if untrustedHeader.Height <= trustedHeader.Height {
 		return fmt.Errorf("expected new header height %d to be greater than one of old header %d",
 			untrustedHeader.Height,
 			trustedHeader.Height)
 	}
 
+	// @ 验证新块头的时间是否大于老块头的时间
 	if !untrustedHeader.Time.After(trustedHeader.Time) {
 		return fmt.Errorf("expected new header time %v to be after old header time %v",
 			untrustedHeader.Time,
 			trustedHeader.Time)
 	}
 
+	// @ 验证新块头的时间是否在有效期内
 	if !untrustedHeader.Time.Before(now.Add(maxClockDrift)) {
 		return fmt.Errorf("new header has a time from the future %v (now: %v; max clock drift: %v)",
 			untrustedHeader.Time,
@@ -181,6 +192,7 @@ func verifyNewHeaderAndVals(
 			maxClockDrift)
 	}
 
+	// @ 验证新块头的validatorsHash是否等于老块头的validatorsHash
 	if !bytes.Equal(untrustedHeader.ValidatorsHash, untrustedVals.Hash()) {
 		return fmt.Errorf("expected new header validators (%X) to match those that were supplied (%X) at height %d",
 			untrustedHeader.ValidatorsHash,

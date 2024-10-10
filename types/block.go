@@ -50,7 +50,7 @@ type Block struct {
 }
 
 // ValidateBasic performs basic validation that doesn't involve state data.
-// It checks the internal consistency of the block.
+// It checks the internal consistency of· the block.
 // Further validation is done using state#ValidateBlock.
 func (b *Block) ValidateBasic() error {
 	if b == nil {
